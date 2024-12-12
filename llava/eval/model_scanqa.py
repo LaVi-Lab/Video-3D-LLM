@@ -3,12 +3,13 @@ import torch
 import os
 import json
 import ray
+import time
 import numpy as np
 from tqdm import tqdm
 import shortuuid
 import fasteners
-import time
 
+from transformers import AutoConfig
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from llava.conversation import conv_templates, SeparatorStyle
 from llava.model.builder import load_pretrained_model
@@ -23,65 +24,6 @@ import re
 
 from PIL import Image
 import math
-
-def clean_answer(data):
-    data = data.lower()
-    data = re.sub('[ ]+$' ,'', data)
-    data = re.sub('^[ ]+' ,'', data)
-    data = re.sub(' {2,}', ' ', data)
-
-    data = re.sub('\.[ ]{2,}', '. ', data)
-    data = re.sub('[^a-zA-Z0-9,\'\s\-:]+', '', data)
-    data = re.sub('ç' ,'c', data)
-    data = re.sub('’' ,'\'', data)
-    data = re.sub(r'\bletf\b' ,'left', data)
-    data = re.sub(r'\blet\b' ,'left', data)
-    data = re.sub(r'\btehre\b' ,'there', data)
-    data = re.sub(r'\brigth\b' ,'right', data)
-    data = re.sub(r'\brght\b' ,'right', data)
-    data = re.sub(r'\bbehine\b', 'behind', data)
-    data = re.sub(r'\btv\b' ,'TV', data)
-    data = re.sub(r'\bchai\b' ,'chair', data)
-    data = re.sub(r'\bwasing\b' ,'washing', data)
-    data = re.sub(r'\bwaslked\b' ,'walked', data)
-    data = re.sub(r'\boclock\b' ,'o\'clock', data)
-    data = re.sub(r'\bo\'[ ]+clock\b' ,'o\'clock', data)
-
-    # digit to word, only for answer
-    data = re.sub(r'\b0\b', 'zero', data)
-    data = re.sub(r'\bnone\b', 'zero', data)
-    data = re.sub(r'\b1\b', 'one', data)
-    data = re.sub(r'\b2\b', 'two', data)
-    data = re.sub(r'\b3\b', 'three', data)
-    data = re.sub(r'\b4\b', 'four', data)
-    data = re.sub(r'\b5\b', 'five', data)
-    data = re.sub(r'\b6\b', 'six', data)
-    data = re.sub(r'\b7\b', 'seven', data)
-    data = re.sub(r'\b8\b', 'eight', data)
-    data = re.sub(r'\b9\b', 'nine', data)
-    data = re.sub(r'\b10\b', 'ten', data)
-    data = re.sub(r'\b11\b', 'eleven', data)
-    data = re.sub(r'\b12\b', 'twelve', data)
-    data = re.sub(r'\b13\b', 'thirteen', data)
-    data = re.sub(r'\b14\b', 'fourteen', data)
-    data = re.sub(r'\b15\b', 'fifteen', data)
-    data = re.sub(r'\b16\b', 'sixteen', data)
-    data = re.sub(r'\b17\b', 'seventeen', data)
-    data = re.sub(r'\b18\b', 'eighteen', data)
-    data = re.sub(r'\b19\b', 'nineteen', data)
-    data = re.sub(r'\b20\b', 'twenty', data)
-    data = re.sub(r'\b23\b', 'twenty-three', data)
-
-    # misc
-    # no1, mat2, etc
-    data = re.sub(r'\b([a-zA-Z]+)([0-9])\b' ,r'\g<1>', data)
-    data = re.sub(r'\ba\b ([a-zA-Z]+)' ,r'\g<1>', data)
-    data = re.sub(r'\ban\b ([a-zA-Z]+)' ,r'\g<1>', data)
-    data = re.sub(r'\bthe\b ([a-zA-Z]+)' ,r'\g<1>', data)
-
-    data = re.sub(r'\bbackwards\b', 'backward', data)
-
-    return data
 
 
 def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False, max_len=2048, system_message: str = "You are a helpful assistant.") -> Dict:
@@ -144,12 +86,31 @@ def eval_model(questions, args):
     disable_torch_init()
     model_path = os.path.expanduser(args.model_path)
     model_name = get_model_name_from_path(model_path)
-    if args.overwrite_cfg:
-        overwrite_config = {'tie_word_embeddings': False, 'use_cache': True, "vocab_size": 151648}
-    else:
-        overwrite_config = None
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name, overwrite_config=overwrite_config)
+    
+    config = {}
+    if args.lora_path is not None:
+        config = AutoConfig.from_pretrained(args.lora_path)
+        config = config.to_dict()
+    elif args.overwrite_cfg:
+        config.update({
+            'tie_word_embeddings': False, 
+            'use_cache': True, 
+            "vocab_size": 151649
+        })
 
+    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name, overwrite_config=config)
+
+    if args.lora_path is not None:
+        from transformers import AutoTokenizer
+        from peft import PeftModel
+        tokenizer = AutoTokenizer.from_pretrained(args.lora_path)
+        model.resize_token_embeddings(len(tokenizer))
+
+        model = PeftModel.from_pretrained(model, args.lora_path, adapter_name="lora")
+        model = model.merge_and_unload()
+        state_dict = torch.load(os.path.join(args.lora_path, 'non_lora_trainables.bin'))
+        msg = model.load_state_dict(state_dict, strict=False)
+    
     answer_file = os.path.expanduser(args.answer_file)
     os.makedirs(os.path.dirname(answer_file), exist_ok=True)
     ans_file = open(answer_file, "a")
@@ -267,6 +228,7 @@ if __name__ == "__main__":
     parser.add_argument("--frame_sampling_strategy", type=str, default="uniform")
     parser.add_argument("--force_sample", type=bool, default=True)
     parser.add_argument("--overwrite_cfg", type=bool, default=False)
+    parser.add_argument("--lora-path", type=str, default=None)
     args = parser.parse_args()
 
     # Data

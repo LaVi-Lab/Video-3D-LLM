@@ -9,7 +9,7 @@ from tqdm import tqdm
 import shortuuid
 import fasteners
 
-
+from transformers import AutoConfig
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from llava.conversation import conv_templates, SeparatorStyle
 from llava.model.builder import load_pretrained_model
@@ -24,8 +24,6 @@ import re
 
 from PIL import Image
 import math
-
-
 
 
 def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False, max_len=2048, system_message: str = "You are a helpful assistant.") -> Dict:
@@ -88,12 +86,31 @@ def eval_model(questions, args):
     disable_torch_init()
     model_path = os.path.expanduser(args.model_path)
     model_name = get_model_name_from_path(model_path)
-    if args.overwrite_cfg:
-        overwrite_config = {'tie_word_embeddings': False, 'use_cache': True, "vocab_size": 151649}
-    else:
-        overwrite_config = None
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name, overwrite_config=overwrite_config)
+    
+    config = {}
+    if args.lora_path is not None:
+        config = AutoConfig.from_pretrained(args.lora_path)
+        config = config.to_dict()
+    elif args.overwrite_cfg:
+        config.update({
+            'tie_word_embeddings': False, 
+            'use_cache': True, 
+            "vocab_size": 151649
+        })
 
+    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name, overwrite_config=config)
+
+    if args.lora_path is not None:
+        from transformers import AutoTokenizer
+        from peft import PeftModel
+        tokenizer = AutoTokenizer.from_pretrained(args.lora_path)
+        model.resize_token_embeddings(len(tokenizer))
+
+        model = PeftModel.from_pretrained(model, args.lora_path, adapter_name="lora")
+        model = model.merge_and_unload()
+        state_dict = torch.load(os.path.join(args.lora_path, 'non_lora_trainables.bin'))
+        msg = model.load_state_dict(state_dict, strict=False)
+    
     answer_file = os.path.expanduser(args.answer_file)
     os.makedirs(os.path.dirname(answer_file), exist_ok=True)
     ans_file = open(answer_file, "a")
@@ -222,6 +239,7 @@ if __name__ == "__main__":
     parser.add_argument("--force_sample", type=bool, default=True)
     parser.add_argument("--overwrite_cfg", type=bool, default=False)
     parser.add_argument("-n", type=int, default=-1)
+    parser.add_argument("--lora-path", type=str, default=None)
     args = parser.parse_args()
 
     # Data

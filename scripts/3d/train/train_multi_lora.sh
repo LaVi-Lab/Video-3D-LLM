@@ -21,7 +21,7 @@ VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
 
 # Stage 2
 PROMPT_VERSION="qwen_1_5"
-MID_RUN_NAME="llavanext-qwen-video3dllm-uniform"
+MID_RUN_NAME="llavanext-qwen-video3dllm-uniform-lora"
 PREV_STAGE_CHECKPOINT="data/models/LLaVA-Video-7B-Qwen2"
 echo "PREV_STAGE_CHECKPOINT: ${PREV_STAGE_CHECKPOINT}"
 echo "MID_RUN_NAME: ${MID_RUN_NAME}"
@@ -85,5 +85,6 @@ torchrun --nnodes=1 --nproc_per_node="${NUM_GPUS}" --master_port 43000 \
     --group_by_task_length True \
     --frame_sampling_strategy uniform \
     --frames_upbound 32 \
+    --lora_enable \
     > "./ckpt/${MID_RUN_NAME}.log" 2>&1
 exit 0;

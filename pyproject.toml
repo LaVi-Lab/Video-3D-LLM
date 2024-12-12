@@ -61,6 +61,8 @@ train = [
     "scipy",
     "imageio",
     "ray",
+    "shortuuid",
+    "fasteners"
 ]
 
 

@@ -39,9 +39,17 @@ def main(args):
                         "from": "gpt"
                     },
                 ]
-                out['metadata'] = {"dataset": "scanQA", "question_type": "unknow"}
+                out['metadata'] = {
+                    "dataset": "scanQA", 
+                    "question_type": "unknow",
+                }
+                if split == "val":
+                    out["metadata"]["answers"] = data["answers"]
+                    out_data.append(out)
+                    break
                 out_data.append(out)
 
+        print(f"{len(out_data)} items...")
         os.makedirs(args.output_dir, exist_ok=True)
         with open(os.path.join(args.output_dir, f"scanqa_{split}_llava_style.json"), "w") as json_file:
             json.dump(out_data, json_file)
